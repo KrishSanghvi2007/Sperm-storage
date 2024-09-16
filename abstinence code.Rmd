@@ -1,0 +1,674 @@
+---
+title: "Abstinence trial"
+author: ""
+date: "2024-03-19"
+output: 
+  rmdformats::robobook:
+    code_folding: show
+    editor_options: 
+      chunk_output_type: console
+    fig_caption: true
+    warning: FALSE
+    message: FALSE
+---
+# Installing packages
+```{r, results='hide'}
+gc()
+pacman::p_load(tidyverse, metafor, meta, dplyr, kableExtra, GGally, bookdown, remotes, ggplot2, Matrix, patchwork, ggpubr, 
+               rotl, ape, Rcpp, treebase, MCMCglmm, orchaRd, LaplacesDemon, metaviz, matrixcalc, psychmeta,
+               orchaRd, 
+               esc, emmeans, 
+               DHARMa, lme4, lmerTest, ggpointdensity, viridis, Rmisc)
+
+
+#devtools::install_github("daniel1noble/orchaRd", force = TRUE)
+setwd("//zoo-suitcase/home$/sedm6403/Desktop/sexual abstinence/Code")
+
+sperm1 <- read.csv("Humans_abstinence.csv", stringsAsFactors=TRUE)
+as.data.frame(sapply(sperm1,class))
+options(scipen = 999)
+```
+
+
+
+# Missing errors
+- Some studies report SD, some report SE, so we we will create code to calculate SD from SE and viceversa, so that we have both values.
+```{r, results='hide', message=FALSE, warning=FALSE}
+# calculating using function
+calculate_missing_values <- function(df) {
+  for (i in 1:17) {
+    sd_col <- paste0("sd_", i)
+    se_col <- paste0("se_", i)
+    n_col <- paste0("n_", i)
+    
+    # Check if columns exist in the dataframe
+    if (!all(c(sd_col, se_col, n_col) %in% colnames(df))) {
+      stop(paste("One or more columns", sd_col, se_col, n_col, "do not exist in the dataframe"))
+    }
+    
+    # Calculate SE if it's missing and SD is present
+    df[[se_col]] <- ifelse(is.na(df[[se_col]]) & !is.na(df[[sd_col]]) & !is.na(df[[n_col]]),
+                           df[[sd_col]] / sqrt(df[[n_col]]),
+                           df[[se_col]])
+    
+    # Calculate SD if it's missing and SE is present
+    df[[sd_col]] <- ifelse(is.na(df[[sd_col]]) & !is.na(df[[se_col]]) & !is.na(df[[n_col]]),
+                           df[[se_col]] * sqrt(df[[n_col]]),
+                           df[[sd_col]])
+    
+    # Debug messages
+    message(paste("Calculated values for column:", i))
+    print(df %>% dplyr::select(all_of(c(sd_col, se_col, n_col))))
+  }
+  return(df)
+}
+
+# Example usage:
+df <- sperm1
+df <- calculate_missing_values(df)
+
+
+ write.csv(df, "check.csv", row.names = FALSE)
+
+sperm <- read.csv("check.csv", stringsAsFactors=TRUE)
+```
+
+- Classifying how many groups are present
+```{r}
+data_present <- !is.na(sperm[, paste0("x_", 1:17)])
+
+# Count non-NA columns for each row
+sperm$count_data_columns <- rowSums(data_present)
+
+# Create AgeAs column based on the count
+sperm$AgeAs <- paste0("Groups", sprintf("%02d", sperm$count_data_columns))
+
+# View the updated dataframe
+head(sperm)  # Display the first few rows to verify
+```
+
+# Formulae test stats
+- We will need to convert some test statistics into correlation coefficients
+- The test stats we have are: chi sq, Spearman's r, Beta (regression coefficient), F value, t values, z values, R squared
+- We also have odds ratio, which we will convert to SMD.
+- Whenever the level of replication in the study for a test stat is not the male, but instead the number of eggs/embryos, we will use the latter as N, rather than number of males. 
+```{r}
+# We will convert point biserial to biserial by assuming balanced sample size, because most studies with test stats only report the overall sample size
+
+# Function to convert R^2 to Pearson's r (Lajeunesse, 2013, Box 13.3)
+r2.to.r <- function(r2){
+  r <- sqrt(r2)
+}
+
+# Function to convert Spearman's rho to Pearson's r (Lajeunesse, 2013)
+spearman_to_pearson <- function(rho){
+  r <- 2*sin((pi*rho)/6)
+}
+
+# Pearson's r to Correlation coefficient
+rtor <- function (Pr){
+  r <- Pr
+}
+
+# To convert Beta to correlation coefficient
+beta.to.r <- function(B,SE,n){
+  n12 <- n
+  n1 <- n/2 # assuming balanced sample size when sample size for each group not reported
+  n2 <- n/2
+  h <- (n12/n1) + (n12/n2)
+  p <- n1/n12 # prop for n1
+  q <- n2/n12 # prop for n2
+  n12 <- n1 + n2
+   t <- (B/SE)
+  df <- n-2
+   r_pb <- t/(sqrt((t^2) + df)) # this calculate r point biserial
+   r <- r_pb*(sqrt(p*q)/dnorm(qnorm(p))) # converting r point biserial to biserial
+
+}
+
+# Function to convert 2x2 chisq test to r (From Chapter 13 Koricheva et al, handbook)
+Chisq_to_r <- function (Chisq,n) {
+   n12 <- n
+  n1 <- n/2
+  n2 <- n/2
+   p <- n1/n12 # prop for n1
+  q <- n2/n12 # prop for n2
+  r_pb <- sqrt(Chisq/n)
+   r <- r_pb*(sqrt(p*q)/dnorm(qnorm(p))) # converting point biserial to biserial
+}
+
+# Convert F from F test to corr coefficient
+f_to_r <- function(Ftest, n) {
+  n12 <- n
+  n1 <- n/2
+  n2 <- n/2
+   p <- n1/n12 # prop for n1
+  q <- n2/n12 # prop for n2
+  df <- n-2
+  r_pb <- sqrt ((Ftest/(Ftest + n -2)))
+   r <- r_pb*(sqrt(p*q)/dnorm(qnorm(p)))
+}
+
+# Convert t from t test to corr coefficient
+t_to_r <- function(Ttest, n) {
+  n12 <- n
+  n1 <- n/2
+  n2 <- n/2
+   p <- n1/n12 # prop for n1
+  q <- n2/n12 # prop for n2
+  df <- n-2
+  r_pb <- Ttest/(sqrt((Ttest^2) + df))
+  r <- r_pb*(sqrt(p*q)/dnorm(qnorm(p)))
+
+}
+
+
+
+# Odd ratio to SMD to corr coefficient
+OR_to_smd <- function(OR) {
+  logOR <- log(OR)
+  smd <- logOR * (sqrt(3) / 3.1415)
+  
+  r <- smd / sqrt(smd^2 + 4)
+  
+  return(r)
+}
+
+# Function to obtain variance of r (Borenstein et al., 2009, Equation 6.1)
+Vr <- function(r,N){
+  Vr <- ((1-r^2)^2)/(N-1)
+}
+
+# Pearson r to FZ (i.e. z transformed corr coefficient)
+r_to_z <- function(r) {
+  z = 0.5 * log((1+r)/ (1-r))
+  return(z)
+}
+
+# variance of Z
+var_z <- function(n) {
+  var_z = 1 / (n-3)
+  return(var_z)
+}
+
+
+#for (i in 1:nrow(sperm)) {
+ # if (sperm$TestStat[i] == "Beta") {
+  #  df$Result[i] <- A1_function(df$TestStat[i])
+  #} else if (df$TestStat[i] == "B") {
+   # df$Result[i] <- B1_function(df$TestStat[i])
+  #} else {
+   # df$Result[i] <- NA  # Or any other default value
+  #}
+#}
+
+
+spermB <- sperm %>% filter (Calculation %in% "TestStat") %>%
+  dplyr::select(Row, Calculation, Test_stat, Value, SE_beta, N_test)  %>% 
+  filter (Calculation == "TestStat" & Test_stat %in% c("Rsq", "Spearman's r", "Pearson's r", "Beta", "F", "Chisq", "t", "OR")) %>%
+  mutate(r = case_when(Test_stat == "Beta" ~ beta.to.r(Value, SE_beta, N_test),
+                       Test_stat == "Rsq" ~ r2.to.r(Value),
+                       Test_stat == "Spearman's r" ~ spearman_to_pearson(Value),
+                       Test_stat == "Chisq" ~ Chisq_to_r (Value, N_test),
+                       Test_stat == "F" ~ f_to_r(Value, N_test),
+                       Test_stat == "t" ~ t_to_r(Value, N_test),
+                       Test_stat == "OR" ~ OR_to_smd(Value),
+                       Test_stat == "Pearson's r" ~ rtor(Value))) %>% mutate(rVar = Vr(r,N_test)) %>%
+  dplyr::select(Row, r, rVar, N_test) %>%
+  filter(!is.nan(r)) 
+
+
+plot(spermB$r, spermB$rVar) 
+
+#write.csv(spermB, "test.csv", row.names = FALSE)
+
+
+
+```
+
+# r from SMD
+```{r}
+ #Select data with calculation = SMD (2 age groups with means and SD)
+
+spermA <- sperm %>% 
+  dplyr::select(Row, Calculation, n_1, n_2, x_1, x_2, sd_1, sd_2, N_unique_males) %>%  
+  filter (Calculation == "SMD")
+
+# Calculate Hedges g using the escalc function from metafor
+
+SMD_2groups <-as.data.frame(escalc(measure = "SMD", 
+                                   n1i = spermA$n_2, n2i = spermA$n_1, 
+                                   m1i = spermA$x_2, m2i = spermA$x_1, 
+                                   sd1i = spermA$sd_2, sd2i = spermA$sd_1))
+
+
+hist (SMD_2groups$yi)
+plot (SMD_2groups$yi, SMD_2groups$vi) # quite evenly distributed but some effect sizes and variances are quite large. 
+
+
+spermA <- bind_cols(spermA, SMD_2groups)
+#spermA
+
+
+# get yi and vi to then convert from d to r 
+
+####### Both formulae below give the exact same results: one formulae is from the esc function convert_d2r, the other is from borenstein et al paper #########
+
+
+dtor1 <- function(d, v, grp1n, grp2n, row) {
+  p <- grp1n / (grp1n + grp2n)
+  es <- d / sqrt(d^2 + 1 / (p * (1 - p)))
+  var <- v / (v + 1 / (p * (1 - p)))
+  return(list(es = es, var = var, Row= row))  # Return both effect size (es) and variance (v) as a list
+}
+d2r <- as.data.frame (dtor1(spermA$yi,spermA$vi,spermA$n_2,spermA$n_1, spermA$Row))
+
+plot (d2r$var,d2r$es)
+
+
+ 
+spermA <- merge(spermA, d2r, by = "Row", all.y = TRUE)
+# write.csv(spermA, "smd.csv", row.names = FALSE)
+
+plot (spermA$yi, spermA$es) # good
+# es is what we need to use as this is thr "r" transformation of SMD
+
+```
+
+# Simulation
+- Creates a simulation of plotting the X axis as age group and Y axis as trait value, and calculates pearsons corr coeff. 
+- For each iteration, it simulates trait values for each age category using the normal distribution with the specified means, sample sizes, and standard deviations.
+- The trait values are concatenated into a single vector.The Pearson correlation between the group codes and the simulated trait values is calculated and stored in the store array.
+
+- A simulation is needed because based on the mean and SD of the sample, a distribution is created for the possible values in that age category. This is based on a random montecarlo process (rnorm), and each time, the value chosen from this distribution will be different. Therefore, simulating it N times is needed. Only means cannot be used to create a regression, data points are needed, and the simulation process generates these data points using 1000 iterations of sampling from a normal distribution given the means and SDs. 
+- The function uses rnorm, which generates random samples from a normal distribution. Each call to rnorm produces a different set of samples, leading to different correlation coefficients.
+
+```{r, warning=FALSE, message=FALSE}
+# Simulation obtained from Sheri Johnson
+# x is function parameter, colname_id is row id, col_name_age_cat is AgeAs column, colname_N is total sample size of males in each group of study, colname_M is mean in each age category, colname_SD is Sd of each age category
+# As number of simulations increase, confidence in estimates will increase. 
+# Note:  nTotal can replace nUnique  in the code if total number of males are to be used as the sample size.
+
+simulate.r.for.age.categories <- function(x, colname_id, colname_age_cat, colname_N, colname_M, colname_SD, simulateN = 1000){
+  x[,colname_N] <- floor(x[,colname_N]) #in case some sample sizes are not integers!
+  store <- array(NA, c(length(unique(x[,colname_id])),simulateN)) #will store 1000 values for each id/effectsize  
+  for(j in (unique(x[,colname_id]))){ #for each unique effect size id
+    subset_x <- na.omit( x[x[,colname_id]==j,])
+    GroupCodes <- as.numeric(rep(subset_x[, colname_age_cat], subset_x[,colname_N])) #vector of group codes
+    #simulate values 1000 times for each id/effect size (draw N observations from normal distribution )
+    for(i in 1:simulateN){      
+      SimulatedTrait <- list()
+      for(s in (unique(subset_x[, colname_age_cat]))){
+        row <- subset_x [subset_x[,colname_age_cat] == s,] 
+        SimulatedTrait[[s]] <- rnorm(row[,colname_N], row[,colname_M], row[,colname_SD]) 
+      }    
+      SimulatedTrait <- unlist(SimulatedTrait)
+      store[as.numeric(j),i] <- as.numeric(cor(GroupCodes, SimulatedTrait, method="pearson")) # Is this calculating spearman's correlation and not pearson's? Will this need a transformation? #save correlations #Okay, spearman changed to pearson
+    }
+  }
+  r <- rowMeans(store) # This calculates the mean of the simulated correlations for each effect size ID.
+  names(r) <- unique(x[,colname_id])
+  return(r)
+}
+
+spermCdata <- sperm %>% 
+  filter (Calculation == "Simulation") %>% 
+  filter (sd_1 >-1)
+
+spermc <- data.frame()
+
+for(ct in unique(spermCdata$AgeAs)){ #Takes 10-15 mins to run
+  
+  ctNumber <- str_remove(ct,"Groups")
+  
+  df <- filter(spermCdata, AgeAs %in% ct) %>%
+    dplyr::select(Row, AgeAs, Trait, N_unique_males,
+            ends_with(paste0("_", seq(1,ctNumber)))) 
+  
+  df2 <- df %>%
+    rownames_to_column("position") %>%
+    dplyr::select(-(starts_with("se"))) %>%  
+    pivot_longer(cols=-c(position, Row, AgeAs, Trait, N_unique_males)) %>% 
+    separate(name, sep = "_", into = c('Varcode','Age_category')) %>%
+    pivot_wider(names_from = Varcode, values_from = value) %>%
+    dplyr::select(position, Row, AgeAs, Trait, N_unique_males, Age_category, n, x, sd) ####
+    
+  result <- data.frame(r = simulate.r.for.age.categories(data.frame(df2), "position", "Age_category", 
+                                                                 "n", "x", "sd"))
+  result$position <- rownames(result)
+  
+  df3 <- left_join(df2, result, by = "position") %>%
+    dplyr::select(-n, -x,-sd, -Age_category) %>%
+    distinct()
+  
+  spermc <- bind_rows(spermc,df3)
+  #print(paste(ct, "is done"))
+} # 
+
+#summary(spermc)
+hist (spermc$r) 
+
+spermc$Var <- Vr (spermc$r, spermc$N_unique_males) 
+plot (spermc$Var, spermc$r)
+
+#write.csv(spermc, "sim.csv", row.names=FALSE)
+```
+
+
+# Percent data
+- When % data is present for groups, but no errors are reported, we will use the formula: d = logit(%_2) - logit(%_1)/(pi/sqrt3)
+```{r, message=FALSE, warning=FALSE}
+percent_to_smd <- function (Row, mean_1, mean_2, n1, n2, N) {
+  # First calculating SMD
+ smd_perc <-  (logit(mean_2/100) - logit(mean_1/100)) / (3.1415/(sqrt(3))) ## CHECK WHETHER LOGIT IS OF % OR OF PROPORTION WITH SN
+ # Now converting SMD to r
+p <- n1 / (n1 + n2)
+  r <- smd_perc / sqrt(smd_perc^2 + 1 / (p * (1 - p)))
+  return (list (es=r, Row= Row))
+ 
+}
+
+spermD <- sperm %>% 
+  dplyr::select(Row, Calculation, n_1, n_2, x_1, x_2, N_unique_males) %>%  
+  filter (Calculation == "Percent")
+
+# Calculate Hedges g using the escalc function from metafor
+
+Percent_2grps <- as.data.frame(percent_to_smd(Row = spermD$Row, mean_1 = spermD$x_1, mean_2 = spermD$x_2, n1 = spermD$n_1, n2 = spermD$n_2, N = spermD$N_unique_males)) 
+
+spermD <- bind_cols(spermD, Percent_2grps)
+spermD$Row <- spermD$Row...1
+#spermA
+
+# get yi and vi to then convert from d to r 
+
+hist(spermD$es)
+
+write.csv(spermD, "Percent.csv", row.names=FALSE)
+```
+
+# Combining calculations datasets
+
+```{r}
+# Start with spermA, rename es to corr
+sperm <- left_join(sperm, dplyr::select(spermA, Row, corr_A = es), by = "Row")
+
+# Add spermB, rename r to corr_B
+sperm <- left_join(sperm, dplyr::select(spermB, Row, corr_B = r), by = "Row")
+
+# Add spermC, rename r to corr_C
+sperm <- left_join(sperm, dplyr::select(spermc, Row, corr_C = r), by = "Row")
+
+# Add spermD, rename es to corr_D
+sperm <- left_join(sperm, dplyr::select(spermD, Row, corr_D = es), by = "Row")
+
+# Combine the corr columns into a single corr column
+sperm <- sperm %>%
+  mutate(corr = coalesce(corr_A, corr_B, corr_C, corr_D)) %>%
+  dplyr::select(-corr_A, -corr_B, -corr_C, -corr_D)
+
+# View the resulting data frame
+head(sperm)
+```
+
+
+
+# Calculating effective sample size
+
+```{r}
+effective_n <- function (Ntotal, N_unique)
+{
+  M <- Ntotal/N_unique
+  D <- 1 + ((M-1) * (0.8)) 
+  N_effective <- Ntotal/D
+}
+
+sperm$N_effective <- effective_n (sperm$N_total, sperm$N_unique_males)
+  
+```
+
+
+# Final effect size
+
+```{r}
+sperm$Zrtemp <- 0.5*(log(1+sperm$corr)-log(1-sperm$corr))
+
+sperm$ZrFinal <- sperm$Zr * sperm$Multiplier
+
+sperm$VZr <- 1/(sperm$N_effective
+ -3)
+
+plot (sperm$ZrFinal, sperm$VZr) 
+
+
+
+write.csv(sperm, "Final.csv", row.names=FALSE)
+
+# 2 rows have NAs: one because all values are zero; the other because both % values are the same
+```
+
+# Models
+
+```{r, warning=FALSE, results='hide'}
+sperm$total_dura <- sperm$Dura_max - sperm$Dura_min
+
+null.model.Alldata <- rma.mv(ZrFinal, VZr,
+                     random = list(~1 | Paper/Cohort, ~1|Row, ~1|Country),
+                     sparse = TRUE,
+                     method = "REML", data = sperm,  verbose=TRUE, control=list(rel.tol=1e-8)) 
+
+null.model.Alldata
+
+p.null <- orchard_plot(null.model.Alldata, 
+             group = "Paper", mod="1",
+             xlab = "Zr", 
+             transfm = "none", 
+             angle = 0) 
+
+p.null
+
+i2_ml(null.model.Alldata)
+r2_ml(null.model.Alldata) #r.e. of study explain <1% heterogeneity, country explains 25%!!
+
+################
+
+full.model <- rma.mv(yi = ZrFinal, V = VZr , mods = ~ Trait + Condition  + Dura_max + Dura_min + Sampling + Study_type + total_dura,
+                           random = list(~1 | Paper/Cohort, ~1|Row, ~1|Country), 
+                           sparse = TRUE,
+                           method = "REML", data = sperm)
+
+
+full.model
+r2_ml(full.model) # 12% explained by fixed effects
+
+
+#############
+
+traits.model.int <- rma.mv(yi = ZrFinal, V = VZr , mods = ~ Trait -1,
+                           random = list(~1 | Paper/Cohort, ~1|Row, ~1|Country), 
+                           sparse = TRUE,
+                           method = "REML", data = sperm)
+traits.model.int
+
+
+
+p.trait <- orchard_plot(traits.model.int, 
+             group = "Paper", mod="Trait",
+             xlab = "Zr", 
+            transfm = "none", 
+             angle = 0) 
+p.trait
+ 
+
+r2_ml(traits.model.int) # trait explains 7%
+
+########
+
+sampling.model.int <- rma.mv(yi = ZrFinal, V = VZr , mods = ~ Sampling -1,
+                           random = list(~1 | Paper/Cohort, ~1|Row, ~1|Country), 
+                           sparse = TRUE,
+                           method = "REML", data = sperm)
+sampling.model.int
+
+sampling.model.compare <- rma.mv(yi = ZrFinal, V = VZr , mods = ~ Sampling,
+                           random = list(~1 | Paper/Cohort, ~1|Row, ~1|Country), 
+                           sparse = TRUE,
+                           method = "REML", data = sperm)
+sampling.model.compare
+
+p.sampling<- orchard_plot(sampling.model.int, 
+            group = "Paper", mod="Sampling",
+             xlab = "Zr", 
+             transfm = "none", 
+             angle = 0) 
+
+
+
+p.sampling
+
+
+######
+
+
+condition.model.int <- rma.mv(yi = ZrFinal, V = VZr , mods = ~ Condition -1,
+                           random = list(~1 | Paper/Cohort, ~1|Row, ~1|Country), 
+                           sparse = TRUE,
+                           method = "REML", data = sperm)
+condition.model.int
+
+condition.model.compare <- rma.mv(yi = ZrFinal, V = VZr , mods = ~ Condition,
+                           random = list(~1 | Paper/Cohort, ~1|Row, ~1|Country), 
+                           sparse = TRUE,
+                           method = "REML", data = sperm)
+condition.model.compare
+
+
+
+p.condition <- orchard_plot(condition.model.int, 
+            group = "Paper", mod="Condition",
+             xlab = "Zr", 
+             transfm = "none", 
+             angle = 0) 
+
+
+
+p.condition
+
+
+#######
+
+mindura.model <- rma.mv(yi = ZrFinal, V = VZr , mods = ~ Dura_min,
+                           random = list(~1 | Paper/Cohort, ~1|Row, ~1|Country), 
+                           sparse = TRUE,
+                           method = "REML", data = sperm  %>% filter(Dura_min <29)) # all min dura are between 0 and 5 days except 1 stuydy, which is 30 days! to avoid this study biasing results, <29 days filtered
+mindura.model
+
+bubble_plot(
+  object = mindura.model,
+ mod = "Dura_min",
+  xlab = "Minimum abstinence sampled",
+  ylab = "Effect size",
+   alpha = 0.5,
+  k = TRUE,
+  g = TRUE,
+  weights = "prop",group = "Paper", 
+  by = NULL,
+  at = NULL, est.lwd = 1,
+  ci.lwd = 0.5,
+  pi.lwd = 0.5,
+  est.col = "black",
+  ci.col = "black",
+  pi.col = "black"
+)
+
+####
+
+maxdura.model <- rma.mv(yi = ZrFinal, V = VZr , mods = ~ Dura_max,
+                           random = list(~1 | Paper/Cohort, ~1|Row, ~1|Country), 
+                           sparse = TRUE,
+                           method = "REML", data = sperm %>% filter(Dura_max < 2000))
+maxdura.model
+
+bubble_plot(
+  object = maxdura.model,
+ mod = "Dura_max",
+  xlab = "Maximum abstinence sampled",
+  ylab = "Effect size",
+   alpha = 0.5,
+  k = TRUE,
+  g = TRUE,
+  weights = "prop",group = "Paper", 
+  by = NULL,
+  at = NULL, est.lwd = 1,
+  ci.lwd = 0.5,
+  pi.lwd = 0.5,
+  est.col = "black",
+  ci.col = "black",
+  pi.col = "black"
+)
+
+
+#### 
+totaldura.model <- rma.mv(yi = ZrFinal, V = VZr , mods = ~ total_dura,
+                           random = list(~1 | Paper/Cohort, ~1|Row, ~1|Country), 
+                           sparse = TRUE,
+                           method = "REML", data = sperm %>% filter(total_dura < 2000))
+totaldura.model
+
+bubble_plot(
+  object = totaldura.model,
+ mod = "total_dura",
+  xlab = "Range of duration of abstinence",
+  ylab = "Effect size",
+   alpha = 0.5,
+  k = TRUE,
+  g = TRUE,
+  weights = "prop",group = "Paper", 
+  by = NULL,
+  at = NULL, est.lwd = 1,
+  ci.lwd = 0.5,
+  pi.lwd = 0.5,
+  est.col = "black",
+  ci.col = "black",
+  pi.col = "black"
+)
+
+
+
+```
+
+# Funnel plots
+
+```{r}
+f.null <- funnel(null.model.Alldata, level=c(90, 95, 99), 
+                 shade=c("white", "gray55", "gray75"), 
+                 yaxis="seinv", refline=0, 
+                 pch=1, 
+                 cex= 1, bg= "red", 
+                 legend=FALSE) 
+f.null
+summary(f.null,digits=3)
+
+
+##########
+
+
+datasperm.agg <- escalc(yi = ZrFinal, vi = VZr, data = sperm)
+#when averaging effect sizes per study we are not assuming that the effect sizes of a study are independent to each other, but instead that they are correlated and, since we do not know the real value of that correlation, we will estimate it as 0.5 for all studies (Nakagawa et al (2021))
+spermTrimFill.agg <- aggregate(datasperm.agg, cluster = Paper, struct = "CS", rho = 0.5)
+meta.analysis.model.r.agg <- rma(yi, vi, test = "knha", data = spermTrimFill.agg, slab = Paper)
+forest(meta.analysis.model.r.agg)
+trimfill.r <- trimfill(meta.analysis.model.r.agg)
+trimfill.r
+funnel(trimfill.r, yaxis = "seinv")
+
+
+
+
+
+
+
+
+```
+
+
