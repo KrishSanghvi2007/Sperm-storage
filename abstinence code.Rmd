@@ -426,6 +426,8 @@ head(sperm)
 # Calculating effective sample size
 
 ```{r}
+
+# Krish - 0.8 is an assumption and needs to be written so in the MS
 effective_n <- function (Ntotal, N_unique)
 {
   M <- Ntotal/N_unique
@@ -442,6 +444,7 @@ sperm$N_effective <- effective_n (sperm$N_total, sperm$N_unique_males)
 ```{r}
 sperm$Zrtemp <- 0.5*(log(1+sperm$corr)-log(1-sperm$corr))
 
+# this did not run
 sperm$ZrFinal <- sperm$Zr * sperm$Multiplier
 
 sperm$VZr <- 1/(sperm$N_effective
@@ -456,12 +459,69 @@ write.csv(sperm, "Final.csv", row.names=FALSE)
 # 2 rows have NAs: one because all values are zero; the other because both % values are the same
 ```
 
+
+# Model
+
+```{r}
+
+# what is above - seems correct but please double check - you can check to see by fitting meta-regression models and see whether some transofmraiotns are actually producing much larger or smaller effect sizes than others
+
+# Also, I put the intial meta-analytic model here
+
+VCV <- vcalc(sperm$VZr, cluster = sperm$Cohort, obs = sperm$Row, rho = 0.8)
+
+sperm$total_dura <- sperm$Dura_max - sperm$Dura_min
+
+mod1 <- rma.mv(ZrFinal, VCV,
+                     random = list( ~1|Country, 
+                                   ~1 |Paper, 
+                                  ~1|Cohort,
+                                  ~1|Row),
+                     sparse = TRUE,
+                     method = "REML", 
+                     data = sperm,  
+                     verbose=TRUE, 
+                     control=list(rel.tol=1e-8)) 
+
+mod1
+orchard_plot(mod1, 
+             group = "Paper", mod="1",
+             xlab = "Correlation", 
+             transfm = "tanh")
+   
+# almost all variatoin comes from effect size levels
+i2_ml(mod1)
+
+
+# model can be simplifed
+mod1b <- rma.mv(ZrFinal, VCV,
+                     random = list(~1 |Paper, 
+                                  ~1|Row),
+                     sparse = TRUE,
+                     method = "REML", 
+                     data = sperm,  
+                     verbose=TRUE, 
+                     control=list(rel.tol=1e-8)) 
+mod1b
+
+i2_ml(mod1b)
+
+
+# this means all there are little differences between studies, but a lot of differences within studies
+
+# this is dut to whtin-study variations in measurements etc
+
+```
+
+
+
 # Models
 
 ```{r, warning=FALSE, results='hide'}
 sperm$total_dura <- sperm$Dura_max - sperm$Dura_min
 
 null.model.Alldata <- rma.mv(ZrFinal, VZr,
+                             # this nesting is not quite right although you might ge the same answer
                      random = list(~1 | Paper/Cohort, ~1|Row, ~1|Country),
                      sparse = TRUE,
                      method = "REML", data = sperm,  verbose=TRUE, control=list(rel.tol=1e-8)) 
