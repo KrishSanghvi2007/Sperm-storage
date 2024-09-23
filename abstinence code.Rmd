@@ -11,28 +11,30 @@ output:
     warning: FALSE
     message: FALSE
 ---
+
 # Installing packages
+
 ```{r, results='hide'}
 gc()
 pacman::p_load(tidyverse, metafor, meta, dplyr, kableExtra, GGally, bookdown, remotes, ggplot2, Matrix, patchwork, ggpubr, 
                rotl, ape, Rcpp, treebase, MCMCglmm, orchaRd, LaplacesDemon, metaviz, matrixcalc, psychmeta,
                orchaRd, 
                esc, emmeans, 
-               DHARMa, lme4, lmerTest, ggpointdensity, viridis, Rmisc)
+               DHARMa, lme4, lmerTest, ggpointdensity, viridis, Rmisc, here)
 
 
 #devtools::install_github("daniel1noble/orchaRd", force = TRUE)
-setwd("//zoo-suitcase/home$/sedm6403/Desktop/sexual abstinence/Code")
+#setwd("//zoo-suitcase/home$/sedm6403/Desktop/sexual abstinence/Code")
 
 sperm1 <- read.csv("Humans_abstinence.csv", stringsAsFactors=TRUE)
 as.data.frame(sapply(sperm1,class))
 options(scipen = 999)
 ```
 
-
-
 # Missing errors
-- Some studies report SD, some report SE, so we we will create code to calculate SD from SE and viceversa, so that we have both values.
+
+-   Some studies report SD, some report SE, so we we will create code to calculate SD from SE and viceversa, so that we have both values.
+
 ```{r, results='hide', message=FALSE, warning=FALSE}
 # calculating using function
 calculate_missing_values <- function(df) {
@@ -73,7 +75,8 @@ df <- calculate_missing_values(df)
 sperm <- read.csv("check.csv", stringsAsFactors=TRUE)
 ```
 
-- Classifying how many groups are present
+-   Classifying how many groups are present
+
 ```{r}
 data_present <- !is.na(sperm[, paste0("x_", 1:17)])
 
@@ -88,10 +91,12 @@ head(sperm)  # Display the first few rows to verify
 ```
 
 # Formulae test stats
-- We will need to convert some test statistics into correlation coefficients
-- The test stats we have are: chi sq, Spearman's r, Beta (regression coefficient), F value, t values, z values, R squared
-- We also have odds ratio, which we will convert to SMD.
-- Whenever the level of replication in the study for a test stat is not the male, but instead the number of eggs/embryos, we will use the latter as N, rather than number of males. 
+
+-   We will need to convert some test statistics into correlation coefficients
+-   The test stats we have are: chi sq, Spearman's r, Beta (regression coefficient), F value, t values, z values, R squared
+-   We also have odds ratio, which we will convert to SMD.
+-   Whenever the level of replication in the study for a test stat is not the male, but instead the number of eggs/embryos, we will use the latter as N, rather than number of males.
+
 ```{r}
 # We will convert point biserial to biserial by assuming balanced sample size, because most studies with test stats only report the overall sample size
 
@@ -227,6 +232,7 @@ plot(spermB$r, spermB$rVar)
 ```
 
 # r from SMD
+
 ```{r}
  #Select data with calculation = SMD (2 age groups with means and SD)
 
@@ -276,12 +282,16 @@ plot (spermA$yi, spermA$es) # good
 ```
 
 # Simulation
-- Creates a simulation of plotting the X axis as age group and Y axis as trait value, and calculates pearsons corr coeff. 
-- For each iteration, it simulates trait values for each age category using the normal distribution with the specified means, sample sizes, and standard deviations.
-- The trait values are concatenated into a single vector.The Pearson correlation between the group codes and the simulated trait values is calculated and stored in the store array.
 
-- A simulation is needed because based on the mean and SD of the sample, a distribution is created for the possible values in that age category. This is based on a random montecarlo process (rnorm), and each time, the value chosen from this distribution will be different. Therefore, simulating it N times is needed. Only means cannot be used to create a regression, data points are needed, and the simulation process generates these data points using 1000 iterations of sampling from a normal distribution given the means and SDs. 
-- The function uses rnorm, which generates random samples from a normal distribution. Each call to rnorm produces a different set of samples, leading to different correlation coefficients.
+-   Creates a simulation of plotting the X axis as age group and Y axis as trait value, and calculates pearsons corr coeff.
+
+-   For each iteration, it simulates trait values for each age category using the normal distribution with the specified means, sample sizes, and standard deviations.
+
+-   The trait values are concatenated into a single vector.The Pearson correlation between the group codes and the simulated trait values is calculated and stored in the store array.
+
+-   A simulation is needed because based on the mean and SD of the sample, a distribution is created for the possible values in that age category. This is based on a random montecarlo process (rnorm), and each time, the value chosen from this distribution will be different. Therefore, simulating it N times is needed. Only means cannot be used to create a regression, data points are needed, and the simulation process generates these data points using 1000 iterations of sampling from a normal distribution given the means and SDs.
+
+-   The function uses rnorm, which generates random samples from a normal distribution. Each call to rnorm produces a different set of samples, leading to different correlation coefficients.
 
 ```{r, warning=FALSE, message=FALSE}
 # Simulation obtained from Sheri Johnson
@@ -354,13 +364,15 @@ plot (spermc$Var, spermc$r)
 #write.csv(spermc, "sim.csv", row.names=FALSE)
 ```
 
-
 # Percent data
-- When % data is present for groups, but no errors are reported, we will use the formula: d = logit(%_2) - logit(%_1)/(pi/sqrt3)
+
+-   When % data is present for groups, but no errors are reported, we will use the formula: d = logit(%\_2) - logit(%\_1)/(pi/sqrt3)
+
 ```{r, message=FALSE, warning=FALSE}
 percent_to_smd <- function (Row, mean_1, mean_2, n1, n2, N) {
   # First calculating SMD
- smd_perc <-  (logit(mean_2/100) - logit(mean_1/100)) / (3.1415/(sqrt(3))) ## CHECK WHETHER LOGIT IS OF % OR OF PROPORTION WITH SN
+ smd_perc <-  (logit(mean_2/100) - logit(mean_1/100)) / (pi/(sqrt(3))) ## CHECK WHETHER LOGIT IS OF % OR OF PROPORTION WITH SN
+ # I changed it to pi 
  # Now converting SMD to r
 p <- n1 / (n1 + n2)
   r <- smd_perc / sqrt(smd_perc^2 + 1 / (p * (1 - p)))
@@ -411,8 +423,6 @@ sperm <- sperm %>%
 head(sperm)
 ```
 
-
-
 # Calculating effective sample size
 
 ```{r}
@@ -426,7 +436,6 @@ effective_n <- function (Ntotal, N_unique)
 sperm$N_effective <- effective_n (sperm$N_total, sperm$N_unique_males)
   
 ```
-
 
 # Final effect size
 
@@ -670,5 +679,3 @@ funnel(trimfill.r, yaxis = "seinv")
 
 
 ```
-
-
