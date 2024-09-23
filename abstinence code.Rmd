@@ -511,6 +511,8 @@ i2_ml(mod1b)
 
 # this is dut to whtin-study variations in measurements etc
 
+# meta-regression modesl can use this simplifed model
+
 ```
 
 
